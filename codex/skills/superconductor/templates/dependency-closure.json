@@ -1,0 +1,19 @@
+{
+  "run_id": "{{RUN_ID}}",
+  "generated_at": "{{GENERATED_AT}}",
+  "closure_status": "incomplete",
+  "requirements": [],
+  "claims": [
+    {
+      "id": "C-001",
+      "requirement_id": "R-001",
+      "status": "underdocumented",
+      "doc_refs": [],
+      "code_refs": [],
+      "question_refs": []
+    }
+  ],
+  "open_dependencies": [],
+  "loop_count": 0,
+  "max_loops": 3
+}

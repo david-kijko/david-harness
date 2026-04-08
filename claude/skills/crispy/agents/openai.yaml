@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crispy"
+  short_description: "QRSPI workflow for large or ambiguous tasks"
+  default_prompt: "Use $crispy to break a broad task into questions, research, structure, plan, and proof-backed implementation."

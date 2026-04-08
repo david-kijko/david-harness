@@ -1,0 +1,21 @@
+{
+  "run_id": "{{RUN_ID}}",
+  "generated_at": "{{GENERATED_AT}}",
+  "sufficiency": "blocked",
+  "pipeline_stage": 5,
+  "high_impact_claims_resolved": false,
+  "blocking_reasons": [
+    "Replace with unresolved contradictions, missing docs, or unmapped code paths."
+  ],
+  "next_actions": [
+    "Run a prompt gut check.",
+    "Run a CGC gut check.",
+    "Refresh the NotebookLM harness dump and delete stale sources."
+  ],
+  "gut_check_results": {
+    "prompt": null,
+    "cgc": null,
+    "nlm": null
+  },
+  "loop_count": 0
+}

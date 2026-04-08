@@ -1,0 +1,54 @@
+{
+  "$schema": "forensic-genesis-finding-v1",
+  "agent": "{{AGENT_NAME}}",
+  "timestamp": "{{ISO_TIMESTAMP}}",
+  "codebase": "{{PROJECT_NAME}}",
+  "path": "{{PROJECT_PATH}}",
+  "summary": {
+    "score": 0.0,
+    "critical_issues": 0,
+    "high_issues": 0,
+    "medium_issues": 0,
+    "low_issues": 0,
+    "suggestions": 0
+  },
+  "metrics": {
+    "files_analyzed": 0,
+    "total_loc": 0,
+    "analysis_duration_ms": 0
+  },
+  "findings": [
+    {
+      "id": "{{AGENT_PREFIX}}-001",
+      "severity": "critical|high|medium|low|info",
+      "category": "{{CATEGORY}}",
+      "title": "{{FINDING_TITLE}}",
+      "location": {
+        "file": "path/to/file.ext",
+        "line_start": 0,
+        "line_end": 0,
+        "column": 0
+      },
+      "description": "{{DETAILED_DESCRIPTION}}",
+      "evidence": "{{CODE_SNIPPET_OR_PROOF}}",
+      "recommendation": "{{ACTIONABLE_FIX}}",
+      "effort_estimate": "{{HOURS}}h",
+      "references": [
+        {
+          "type": "documentation|article|cve",
+          "url": "{{URL}}",
+          "title": "{{TITLE}}"
+        }
+      ],
+      "tags": ["{{TAG1}}", "{{TAG2}}"]
+    }
+  ],
+  "notebooklm_insights": [
+    {
+      "query": "{{QUESTION_ASKED}}",
+      "response": "{{NOTEBOOKLM_RESPONSE}}",
+      "relevance_score": 0.0
+    }
+  ],
+  "graphiti_episode_id": "{{EPISODE_UUID}}"
+}

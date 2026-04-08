@@ -1,0 +1,4 @@
+interface:
+  display_name: "MacBox"
+  short_description: "Terminal basics for macOS sandbox containers and noVNC sessions"
+  default_prompt: "Use $macbox to run safe, basic terminal commands, inspect services, and troubleshoot clipboard or paste workflows in the macOS sandbox."

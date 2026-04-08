@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kijko Hygiene"
+  short_description: "Kijko branch, PR, worktree, and review protocol"
+  default_prompt: "Use $kijko-hygiene to enforce Kijko branch naming, Linear linkage, PR hygiene, worktree lifecycle, and HyperVisa approval boundaries."

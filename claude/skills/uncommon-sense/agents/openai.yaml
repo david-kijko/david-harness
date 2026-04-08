@@ -1,0 +1,4 @@
+interface:
+  display_name: "Uncommon Sense"
+  short_description: "Intent-first orchestration for complex work"
+  default_prompt: "Use $uncommon-sense to infer hidden requirements, choose the right specialist capability, and deliver a quality-checked artifact."

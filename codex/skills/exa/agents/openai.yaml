@@ -1,0 +1,7 @@
+interface:
+  display_name: "Exa Research"
+  short_description: "Default live-web research with Exa"
+  default_prompt: "Use $exa to research current cited information on the web."
+
+policy:
+  allow_implicit_invocation: true

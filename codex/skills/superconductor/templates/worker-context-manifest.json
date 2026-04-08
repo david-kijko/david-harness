@@ -1,0 +1,39 @@
+{
+  "run_id": "{{RUN_ID}}",
+  "generated_at": "{{GENERATED_AT}}",
+  "driver": "architect",
+  "required_skills": [
+    "architect",
+    "curiosity",
+    "forensic-ingest",
+    "sequential-thinking"
+  ],
+  "skill_source_preference": [
+    "superpowers",
+    "shared-skills",
+    "local-project-context"
+  ],
+  "required_docs": [],
+  "nlm_aliases": [],
+  "gut_checks": [
+    "prompt",
+    "cgc",
+    "nlm"
+  ],
+  "nlm_freshness_policy": {
+    "mode": "delete-and-replace",
+    "rule": "Delete superseded harness sources and upload the newest version under the canonical title."
+  },
+  "spawn_invariant": {
+    "pre_spawn_checklist": [
+      "Prompt gut check: restate track intent as explicit claims",
+      "CGC gut check: verify claim-to-code mapping for this track",
+      "NLM gut check: confirm harness dump is current",
+      "Sequential-thinking: plan closure order and implementation sequence",
+      "Skills attached: load all skills from required_skills",
+      "Exa check: attach Exa only if track involves external APIs/libraries"
+    ],
+    "worker_directive": "Complete ALL tasks in the plan. Do not stop at a proof slice. Follow workflow.md for the task lifecycle.",
+    "on_failure": "Save progress to plan.md, report the failure point, re-spawn from next pending task."
+  }
+}

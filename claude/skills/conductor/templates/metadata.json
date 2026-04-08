@@ -1,0 +1,8 @@
+{
+  "track_id": "{{TRACK_ID}}",
+  "type": "feature",
+  "status": "new",
+  "created_at": "{{TIMESTAMP}}",
+  "updated_at": "{{TIMESTAMP}}",
+  "description": "{{DESCRIPTION}}"
+}

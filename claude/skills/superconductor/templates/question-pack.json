@@ -1,0 +1,27 @@
+{
+  "run_id": "{{RUN_ID}}",
+  "generated_at": "{{GENERATED_AT}}",
+  "prompt_claims": [],
+  "gap_classes": [
+    "intent-doc drift",
+    "doc-code drift",
+    "missing documentation",
+    "undocumented implementation"
+  ],
+  "questions": [
+    {
+      "id": "Q-001",
+      "source": "curiosity",
+      "focus": "negative-space",
+      "status": "open",
+      "claim_refs": [],
+      "requirement_refs": [],
+      "prompt": "Which expected dependency, ownership edge, or boundary behavior is missing from the current graph for this requirement?"
+    }
+  ],
+  "gut_checks": [
+    "prompt",
+    "cgc",
+    "nlm"
+  ]
+}

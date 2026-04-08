@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Browser Interactive"
+  short_description: "Persistent browser QA and automation via agent-browser"
+  default_prompt: "Use $agent-browser-interactive to drive a browser with persistent agent-browser sessions, iterative QA, and evidence-backed visual verification."

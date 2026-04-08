@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hephaestus"
+  short_description: "Delegate deep implementation work to the Codex worker"
+  default_prompt: "Use $hephaestus to hand off a bounded implementation task to the autonomous Codex worker and return with a completed result."
