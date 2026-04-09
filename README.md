@@ -42,6 +42,7 @@ david-harness/
 | `nlm-dual-notebook-architecture` | Large codebase ingestion pattern for NLM |
 | `peep` | Semi-formal certificate-based code reasoning |
 | `proofshot` | Visual UI verification with video recording |
+| `trace2skill` | Session-trace analysis and skill-patch extraction from `.codex` and `.claude` runs |
 | `superconductor` | Autonomous spec-to-verified execution pipeline |
 | `uncommon-sense` | Hidden requirement inference and orchestration |
 
