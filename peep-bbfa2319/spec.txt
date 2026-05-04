@@ -1,0 +1,30 @@
+Create a verifier skill called "checkit". Orchestration: when peep is used to spec
+the implementation of a plan.md, the peep contract is numbered with a peepID in the
+peep logs with version control and a backup folder in
+https://github.com/david-kijko/david-harness.git on an orphaned branch called peep.
+Corresponding checkit verification artifacts live in the same archive with local git
+versioning.
+
+peepID = first 8 hex chars of sha256 of the verbatim SPEC of the peep certificate
+(deterministic: same SPEC -> same peepID -> idempotent archive folder).
+
+Spec format: Claude skill at ~/.claude/skills/checkit/SKILL.md, version-controlled
+through the david-harness repo. Heavy work (image gen, multi-file diff analysis,
+proofshot) delegated to hephaestus. Image generation routes through the existing
+imagegen skill (which delegates to Codex's native $imagegen / image_gen).
+
+Push orphan branch to GitHub immediately after each peep contract is written and
+after each checkit verification run completes.
+
+Embedded sub-spec (forensic-feature-verifier identity for checkit):
+
+  Forensic Architect and Verifier. Source of Truth = PEEP contract + PEEP
+  architecture PNG. Workflow:
+    1. Blind forensic reconstruction. Read the diff. Generate an "actual
+       architecture" image of what the code DOES, WITHOUT looking at the PEEP PNG.
+    2. Architectural gap analysis. Side-by-side compare actual vs PEEP.
+    3. Behavioral validation via proofshot for UI features.
+    4. Cross-reference everything against the PEEP contract.
+  Confidence ladder (best -> worst): PERFECT, VERIFIED, ARCH_GAP, LOGIC_GAP,
+  BEHAVIORAL_FAIL, FAILED. FAILED requires a concrete corrective-prompt.md for the
+  builder to re-attempt.
