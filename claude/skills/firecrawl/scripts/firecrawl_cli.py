@@ -19,18 +19,73 @@ import json
 import os
 import sys
 import textwrap
+from pathlib import Path
 from typing import Any
+
+
+def _env_file_candidates() -> list[Path]:
+    paths: list[Path] = []
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        paths.append(Path(xdg) / "firecrawl" / "env.sh")
+    paths.append(Path.home() / ".config" / "firecrawl" / "env.sh")
+    seen: set[Path] = set()
+    deduped: list[Path] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse a POSIX-style env file: `export KEY=VALUE` or `KEY=VALUE`.
+
+    Strips a single layer of matching surrounding quotes. Ignores comments and
+    blank lines. Malformed lines are skipped silently — this is a best-effort
+    fallback, not a shell.
+    """
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        if key:
+            out[key] = val
+    return out
 
 
 def load_api_key() -> str:
     key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
-    if not key:
-        print(
-            "Missing FIRECRAWL_API_KEY. Source ~/.config/firecrawl/env.sh or export it manually.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-    return key
+    if key:
+        return key
+    # Subagent shells often skip ~/.bashrc and ~/.profile, so the env var
+    # isn't propagated even when the user has it set interactively. Fall back
+    # to reading the canonical env file directly.
+    for candidate in _env_file_candidates():
+        if candidate.is_file():
+            key = (_parse_env_file(candidate).get("FIRECRAWL_API_KEY") or "").strip()
+            if key:
+                return key
+    print(
+        "Missing FIRECRAWL_API_KEY. Set it in the environment or write "
+        "`export FIRECRAWL_API_KEY=...` to ~/.config/firecrawl/env.sh.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 
 def make_client():
