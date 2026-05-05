@@ -1,0 +1,1475 @@
+diff --git a/claude/skills/checkit/SKILL.md b/claude/skills/checkit/SKILL.md
+new file mode 100644
+index 0000000..a26a328
+--- /dev/null
++++ b/claude/skills/checkit/SKILL.md
+@@ -0,0 +1,258 @@
++---
++name: checkit
++description: Use when verifying that a builder agent's actual code changes match a peep contract's specification. Audits a diff against the archived contract via adversarial gap analysis: identifies unsatisfied requirements, violated invariants, scope creep; runs proofshot mandatorily for UI-behavior-affecting features; emits a structured verdict (PASS, GAP, BEHAVIORAL_FAIL, MANIFEST_INCOMPLETE) and a corrective prompt for the next builder session. Triggers include "checkit", "verify the build", "audit the diff", "did the builder ship what was specified", "verify peep-XXXXXXXX", "/checkit peep-XXXXXXXX". Pairs with peep — peep specifies, checkit verifies. Reads from the orphan branch `peep` archive at ~/peep-archive/<peepID>/ and writes verification runs back to the same archive.
++---
++
++# checkit — Forensic Verifier for peep Contracts
++
++## Purpose
++
++`peep` produces a contract at *plan time*. The builder ships code at *build
++time*. **checkit closes the loop at audit time**: given a `peepID`, it audits
++the actual code diff against the archived contract and emits a structured
++verdict + corrective prompt. Every verification run is itself archived to the
++same orphan branch as the contract, so the GitHub history is a permanent,
++diffable trail joining every contract to every audit of it.
++
++**This is not blind verification.** Adversarial framing of one agent
++("find requirements that are NOT satisfied") is the bias mitigation, not a
++sealed sandbox. If you want true blind reconstruction, that's a future
++hardening — see "Honest limitations" below.
++
++## Invocation
++
++```
++/checkit <peepID>
++```
++
++The peepID is **mandatory**, format `peep-<8 hex chars>`. No mtime fallback,
++no auto-detect. The contract must already be archived at
++`~/peep-archive/<peepID>/`.
++
++## The four verdict tokens
++
++Strict precedence — earliest match wins:
++
++1. **`MANIFEST_INCOMPLETE`** — `build-manifest.json` missing required fields
++2. **`BEHAVIORAL_FAIL`** — `proofshot` caught a regression (only possible
++   when contract `UI_BEHAVIOR_AFFECTING=yes`)
++3. **`GAP`** — gap-report.md found any NOT SATISFIED requirement, VIOLATED
++   invariant, or scope creep
++4. **`PASS`** — everything above clean
++
++`corrective-prompt.md` is written for any non-PASS verdict.
++
++## Inputs
++
++Read from the archive:
++
++| File | Purpose | Required |
++|---|---|---|
++| `~/peep-archive/<peepID>/contract.md` | the spec to verify against | yes |
++| `~/peep-archive/<peepID>/build-manifest.json` | where the code change lives | yes |
++| `~/peep-archive/<peepID>/mental-model.brief.md` | architectural intent (for adversarial agent context) | optional |
++| `~/peep-archive/<peepID>/mental-model.png` | architectural intent (for adversarial agent context) | optional |
++
++`build-manifest.json` schema:
++
++```json
++{
++  "peepID": "peep-bbfa2319",
++  "repo": "/abs/path/to/project",
++  "base": "<git commit SHA before the change>",
++  "head": "<git commit SHA after the change, or 'HEAD'>",
++  "tests": ["pytest tests/test_foo.py::test_bar", ...],
++  "app": { "launch_cmd": "...", "url": "http://localhost:..." }
++}
++```
++
++`app.launch_cmd` and `app.url` are **required if and only if**
++`contract.UI_BEHAVIOR_AFFECTING == yes`. If the field is `yes` and
++`app.*` is absent → verdict = `MANIFEST_INCOMPLETE`.
++
++## Workflow
++
++### Step 1 — Validate inputs and create the run directory
++
++```bash
++PEEPID="$1"   # e.g. peep-bbfa2319
++ARCHIVE=~/peep-archive/$PEEPID
++
++# Validate
++[ -f "$ARCHIVE/contract.md" ]          || { echo "no contract for $PEEPID" >&2; exit 2; }
++[ -f "$ARCHIVE/build-manifest.json" ]  || { 
++  RUN=$ARCHIVE/checkit/run-$(date -u +%Y-%m-%dT%H%MZ)-$(uuidgen | cut -c1-6)
++  mkdir -p "$RUN"
++  echo "MANIFEST_INCOMPLETE" > "$RUN/verdict.md"
++  cat > "$RUN/corrective-prompt.md" <<EOF
++build-manifest.json is missing at $ARCHIVE/build-manifest.json. Builder must
++write {peepID, repo, base, head, tests, app(if UI)} and re-run /checkit $PEEPID.
++EOF
++  # commit + push (Step 6) then exit
++}
++
++RUN="$ARCHIVE/checkit/run-$(date -u +%Y-%m-%dT%H%MZ)-$(uuidgen | cut -c1-6)"
++mkdir -p "$RUN"
++```
++
++### Step 2 — Compute the diff
++
++```bash
++REPO=$(jq -r .repo "$ARCHIVE/build-manifest.json")
++BASE=$(jq -r .base "$ARCHIVE/build-manifest.json")
++HEAD=$(jq -r .head "$ARCHIVE/build-manifest.json")
++git -C "$REPO" diff "$BASE..$HEAD" > "$RUN/diff.txt"
++```
++
++If the diff is huge (>2 MB), truncate with a header noting the truncation.
++`git diff` already skips binaries (replaced with `Binary files differ`).
++
++### Step 3 — Adversarial gap analysis (mandatory)
++
++Dispatch one `hephaestus` call using `templates/adversarial-audit.md` as the
++brief. Substitute the placeholder paths with the actual `$ARCHIVE` and `$RUN`
++values. Hephaestus reads `contract.md` and `diff.txt` and produces
++`$RUN/gap-report.md`.
++
++```bash
++brief=$(mktemp)
++sed -e "s|{{ARCHIVE}}|$ARCHIVE|g" -e "s|{{RUN}}|$RUN|g" -e "s|{{PEEPID}}|$PEEPID|g" \
++  /home/david/.claude/skills/checkit/templates/adversarial-audit.md > "$brief"
++
++COMPLETION_GUARD_TASK_TYPE=gap_analysis \
++HEPHAESTUS_MODEL=gpt-5.5 HEPHAESTUS_REASONING_EFFORT=high \
++hephaestus --file "$brief" --dir "$RUN" --dangerous
++```
++
++Wait for `gap-report.md` to land. Read its closing line:
++- `GAP_FINDINGS_FOUND` → verdict candidate `GAP`
++- `GAP_FINDINGS_NONE` → verdict candidate `PASS`
++
++### Step 4 — Proofshot (mandatory if UI-affecting)
++
++```bash
++UI=$(grep -E "^UI_BEHAVIOR_AFFECTING:" "$ARCHIVE/contract.md" | awk '{print $2}')
++if [ "$UI" = "yes" ]; then
++  LAUNCH=$(jq -r '.app.launch_cmd // ""' "$ARCHIVE/build-manifest.json")
++  URL=$(jq -r '.app.url // ""' "$ARCHIVE/build-manifest.json")
++  if [ -z "$LAUNCH" ] || [ -z "$URL" ]; then
++    echo "MANIFEST_INCOMPLETE" > "$RUN/verdict.md"
++    cat > "$RUN/missing-proofshot-fields.md" <<EOF
++Contract declares UI_BEHAVIOR_AFFECTING=yes but build-manifest.json is missing
++app.launch_cmd or app.url. Builder must fill these and re-run /checkit $PEEPID.
++EOF
++    cat > "$RUN/corrective-prompt.md" <<EOF
++$(cat "$RUN/missing-proofshot-fields.md")
++EOF
++    # skip to commit + push
++  else
++    mkdir -p "$RUN/proofshot"
++    # invoke /proofshot with the contract's UI NEW_TEST_OBLIGATIONS as the
++    # test plan, $LAUNCH as the launch command, $URL as the target.
++    # Save artifacts to $RUN/proofshot/.
++    # If proofshot reports any failure, set verdict candidate = BEHAVIORAL_FAIL.
++  fi
++fi
++```
++
++When invoking `/proofshot`, pass:
++- `--launch`: the launch command from the manifest
++- `--url`: the URL from the manifest
++- `--scenarios`: file containing the contract's UI-related NEW TEST OBLIGATIONS (NTn rows where the test exercises a UI flow), one per line
++- `--out`: `$RUN/proofshot/`
++
++A proofshot failure (timeout, console error, visual regression, failed
++assertion) → `BEHAVIORAL_FAIL` candidate.
++
++### Step 5 — Apply verdict precedence
++
++```python
++if MANIFEST_INCOMPLETE_set:    verdict = "MANIFEST_INCOMPLETE"
++elif BEHAVIORAL_FAIL_set:      verdict = "BEHAVIORAL_FAIL"
++elif GAP_set:                  verdict = "GAP"
++else:                          verdict = "PASS"
++```
++
++Write verdict.md (single token on first line):
++```bash
++echo "$VERDICT" > "$RUN/verdict.md"
++```
++
++### Step 6 — Corrective prompt (any non-PASS)
++
++If verdict is not `PASS`, write `$RUN/corrective-prompt.md` containing:
++
++- The verdict token
++- Bulleted list of every NOT-SATISFIED Rn, VIOLATED INVm, scope-creep file,
++  proofshot failure, or missing manifest field
++- For each, what the builder should do next (file edits, missing tests,
++  missing manifest field, etc.)
++
++This file is the input to the next builder session.
++
++### Step 7 — Commit + push the orphan branch
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/checkit/$(basename "$RUN")"
++git commit -m "checkit $PEEPID verdict=$VERDICT"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 8 — Report to the user
++
++Print:
++```
++checkit complete: <peepID>
++  run:     <run path>
++  verdict: <verdict token>
++  pushed:  origin/peep
++  next:    <if non-PASS>: read $RUN/corrective-prompt.md, fix, re-run /checkit
++           <if PASS>:     ship it
++```
++
++## Run folder naming
++
++`<run> = ~/peep-archive/<peepID>/checkit/run-<UTC-iso>-<6char-uuid>/`
++
++Example: `~/peep-archive/peep-bbfa2319/checkit/run-2026-05-05T0142Z-3f9a2c/`
++
++No counter — race-free under concurrent checkit invocations.
++
++## Outputs in the run folder
++
++| File | When | Contents |
++|---|---|---|
++| `diff.txt` | always | the audited diff |
++| `gap-report.md` | always (unless MANIFEST_INCOMPLETE before Step 3) | adversarial review findings |
++| `verdict.md` | always | one token: PASS \| GAP \| BEHAVIORAL_FAIL \| MANIFEST_INCOMPLETE |
++| `corrective-prompt.md` | non-PASS | next-builder-session instructions |
++| `proofshot/` | UI-affecting + manifest complete | proofshot session artifacts |
++| `missing-proofshot-fields.md` | UI-affecting + manifest incomplete | what fields are missing |
++
++## Honest limitations
++
++- **Not blind.** The adversarial agent has the contract while reviewing the
++  diff. Adversarial framing ("find requirements that are NOT satisfied") is
++  the only bias mitigation. The previous design's "sealed temp dir" was
++  policy not enforcement on this machine because hephaestus runs codex with
++  `--dangerously-bypass-approvals-and-sandbox`. True blind reconstruction
++  is a v2 hardening (requires bwrap or container isolation around the
++  phase-1 dispatch); explicitly out of scope for v1.
++- **Manifest is documentation, not enforcement.** If the builder lies in
++  build-manifest.json (wrong base/head/repo), checkit audits the lie. Fix
++  is builder discipline + clear peep template guidance, not checkit
++  machinery.
++- **Diff filtering is naive.** Huge diffs are truncated; binaries skipped
++  by git itself; generated files are NOT auto-excluded — that's the
++  builder's responsibility via `.gitattributes`.
++
++## See also
++
++- `peep` — produces the contracts checkit verifies
++- `proofshot` — invoked by checkit for UI-affecting features
++- `hephaestus` — the deep worker checkit dispatches for adversarial review
++- Orphan branch `peep` of `david-kijko/david-harness` — the archive of all contracts and verifications
+diff --git a/claude/skills/checkit/templates/adversarial-audit.md b/claude/skills/checkit/templates/adversarial-audit.md
+new file mode 100644
+index 0000000..26ad4c3
+--- /dev/null
++++ b/claude/skills/checkit/templates/adversarial-audit.md
+@@ -0,0 +1,122 @@
++# Adversarial gap analysis brief (checkit phase)
++
++gap_analysis
++
++You are an ADVERSARIAL reviewer. The peep contract below specifies what
++WAS SUPPOSED to be built. The diff below is what WAS ACTUALLY shipped.
++Your job is to find what is **missing, wrong, or out of scope**. Do not be
++polite. Do not validate. Find the gaps.
++
++## Inputs (read all of these)
++
++1. **CONTRACT** — the spec, with R1..Rn requirements, INV1..INVm invariants,
++   CHANGE SURFACE files, NEW TEST OBLIGATIONS, anti-claims:
++   {{ARCHIVE}}/contract.md
++
++2. **DIFF** — the actual code change being audited:
++   {{RUN}}/diff.txt
++
++3. **BUILD MANIFEST** — repo, base, head, tests, app launch info:
++   {{ARCHIVE}}/build-manifest.json
++
++4. **MENTAL MODEL BRIEF (optional)** — author's architectural intent:
++   {{ARCHIVE}}/mental-model.brief.md (if present)
++
++## Required output
++
++Write `{{RUN}}/gap-report.md` with these sections, in this order:
++
++### 1. Requirement satisfaction
++
++For **every** Rn in the contract, output one row:
++
++```
++- [SATISFIED | NOT_SATISFIED | PARTIAL] Rn — <short description>
++  Evidence: <file:line in the diff that satisfies it, or note "no diff hunk">
++  If PARTIAL: <what's missing>
++```
++
++A requirement that is not addressed in the diff at all is `NOT_SATISFIED`,
++not "out of scope".
++
++### 2. Invariant preservation
++
++For **every** INVm in the contract, output one row:
++
++```
++- [PRESERVED | VIOLATED] INVm — <short description>
++  Evidence: <file:line + 1-sentence reasoning>
++```
++
++### 3. Scope creep
++
++For **every file changed in the diff** that is NOT listed in the contract's
++CHANGE SURFACE, output one row:
++
++```
++- <file path> (+<adds>, -<dels>) — <one-line description of what changed>
++  Note: not in CHANGE SURFACE; flag for human review.
++```
++
++If the diff respects the CHANGE SURFACE exactly, write: "No scope creep."
++
++### 4. Anti-claims
++
++For each anti-claim in the contract or mental-model brief (e.g. "no edits to
++legacy_retry.py", "no plugin system", any item under WHAT THE PICTURE MUST
++NOT IMPLY), check the diff. List violations:
++
++```
++- VIOLATED: <anti-claim verbatim> — Evidence: <file:line>
++```
++
++If no violations: "No anti-claim violations."
++
++### 5. Test obligations
++
++For **every** NTn in the contract, output:
++
++```
++- [PRESENT | MISSING] NTn — <short description>
++  If PRESENT: <test file:test name in the diff>; does it cover what NTn claims?
++```
++
++### 6. Summary
++
++A 3-5 sentence honest summary. What was shipped, what was skipped, what was
++out of scope, your overall confidence.
++
++## Required closing line
++
++The last line of the file MUST be exactly one of:
++
++```
++GAP_FINDINGS_FOUND
++GAP_FINDINGS_NONE
++```
++
++`GAP_FINDINGS_NONE` requires:
++- Every Rn is SATISFIED (no NOT_SATISFIED, no PARTIAL)
++- Every INVm is PRESERVED
++- No scope creep
++- No anti-claim violations
++- Every NTn is PRESENT and adequately covers its claim
++
++Anything else → `GAP_FINDINGS_FOUND`.
++
++## Discipline
++
++- Cite `file:line` from `{{RUN}}/diff.txt` line numbers, not from the
++  original repo.
++- Do not speculate about what's "probably correct" — if the diff doesn't
++  show it, it isn't shipped.
++- Do not give the benefit of the doubt — checkit is the bias-checker for the
++  builder, not their cheerleader.
++- Adversarial framing: phrase findings as gaps, not as praise. "Rn is
++  SATISFIED" is fine; "Rn is beautifully implemented" is not.
++
++## Required final output (printed to stdout, in addition to writing the file)
++
++- `output: {{RUN}}/gap-report.md`
++- `bytes: <N>` (size of the file)
++- `closing: GAP_FINDINGS_FOUND` or `closing: GAP_FINDINGS_NONE`
+diff --git a/claude/skills/firecrawl/scripts/firecrawl_cli.py b/claude/skills/firecrawl/scripts/firecrawl_cli.py
+index faace5a..5f2b092 100755
+--- a/claude/skills/firecrawl/scripts/firecrawl_cli.py
++++ b/claude/skills/firecrawl/scripts/firecrawl_cli.py
+@@ -19,18 +19,73 @@ import json
+ import os
+ import sys
+ import textwrap
++from pathlib import Path
+ from typing import Any
+ 
+ 
++def _env_file_candidates() -> list[Path]:
++    paths: list[Path] = []
++    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
++    if xdg:
++        paths.append(Path(xdg) / "firecrawl" / "env.sh")
++    paths.append(Path.home() / ".config" / "firecrawl" / "env.sh")
++    seen: set[Path] = set()
++    deduped: list[Path] = []
++    for p in paths:
++        if p not in seen:
++            seen.add(p)
++            deduped.append(p)
++    return deduped
++
++
++def _parse_env_file(path: Path) -> dict[str, str]:
++    """Parse a POSIX-style env file: `export KEY=VALUE` or `KEY=VALUE`.
++
++    Strips a single layer of matching surrounding quotes. Ignores comments and
++    blank lines. Malformed lines are skipped silently — this is a best-effort
++    fallback, not a shell.
++    """
++    out: dict[str, str] = {}
++    try:
++        text = path.read_text()
++    except OSError:
++        return out
++    for raw in text.splitlines():
++        line = raw.strip()
++        if not line or line.startswith("#"):
++            continue
++        if line.startswith("export "):
++            line = line[len("export "):].lstrip()
++        if "=" not in line:
++            continue
++        key, _, val = line.partition("=")
++        key = key.strip()
++        val = val.strip()
++        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
++            val = val[1:-1]
++        if key:
++            out[key] = val
++    return out
++
++
+ def load_api_key() -> str:
+     key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+-    if not key:
+-        print(
+-            "Missing FIRECRAWL_API_KEY. Source ~/.config/firecrawl/env.sh or export it manually.",
+-            file=sys.stderr,
+-        )
+-        raise SystemExit(2)
+-    return key
++    if key:
++        return key
++    # Subagent shells often skip ~/.bashrc and ~/.profile, so the env var
++    # isn't propagated even when the user has it set interactively. Fall back
++    # to reading the canonical env file directly.
++    for candidate in _env_file_candidates():
++        if candidate.is_file():
++            key = (_parse_env_file(candidate).get("FIRECRAWL_API_KEY") or "").strip()
++            if key:
++                return key
++    print(
++        "Missing FIRECRAWL_API_KEY. Set it in the environment or write "
++        "`export FIRECRAWL_API_KEY=...` to ~/.config/firecrawl/env.sh.",
++        file=sys.stderr,
++    )
++    raise SystemExit(2)
+ 
+ 
+ def make_client():
+diff --git a/claude/skills/peep/SKILL.md b/claude/skills/peep/SKILL.md
+index d6646ab..9038c46 100644
+--- a/claude/skills/peep/SKILL.md
++++ b/claude/skills/peep/SKILL.md
+@@ -61,6 +61,17 @@ Brownfield and greenfield templates each end with a mandatory `MENTAL MODEL DIAG
+ 
+ The brief — not the image — is the primary review artifact. Its purpose is to surface the architectural intuitions that prose leaves implicit (purity vs IO, owned vs external, in-scope vs explicitly-rejected, invariants the picture must encode, anti-claims the picture must NOT imply). An adversarial reviewer reads the brief AND looks at the image to spot business-logic errors and hidden assumptions the prose hid. Do not write the brief from a checklist; the agent producing the certificate writes it themselves.
+ 
++## Construction templates also SELF-ARCHIVE (v2.3)
++
++Brownfield and greenfield certificates end with a mandatory `SELF-ARCHIVE` step that:
++
++- computes `peepID = sha8(verbatim SPEC)` — content-addressed, deterministic
++- writes `~/peep-archive/<peepID>/{spec.txt, contract.md, mental-model.brief.md, mental-model.png}` to a worktree of the orphan branch `peep` in `david-kijko/david-harness`
++- commits and pushes the orphan branch immediately
++- declares `UI_BEHAVIOR_AFFECTING: yes|no` so the downstream `checkit` skill knows whether `proofshot` is mandatory for the verification
++
++The orphan branch IS the peep log: a permanent, diffable trail joining every contract to every verification of it (verifications produced by `/checkit <peepID>`).
++
+ ## Tone
+ 
+ Skip prose recap. Fill the certificate. The bracketed fields ARE the work product.
+diff --git a/claude/skills/peep/templates/brownfield-construction.md b/claude/skills/peep/templates/brownfield-construction.md
+index 0b19cbd..bb3eacf 100644
+--- a/claude/skills/peep/templates/brownfield-construction.md
++++ b/claude/skills/peep/templates/brownfield-construction.md
+@@ -119,6 +119,18 @@ R2 → [...]
+ (Coverage check: which input partitions does NT1...NTn together exercise?
+ Note any unexercised partition that Rn implicitly requires.)
+ 
++UI_BEHAVIOR_AFFECTING: [yes | no]
++  Answer "yes" if any Rn changes the visible or interactive behavior of a
++  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
++  extension, etc.). Answer "no" for pure backend, CLI, library, or
++  build-tooling features.
++
++  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
++  describable as a proofshot scenario (start app -> navigate -> assert
++  visual state), AND the builder MUST include `app.launch_cmd` and
++  `app.url` in build-manifest.json before invoking checkit. checkit
++  rejects MANIFEST_INCOMPLETE otherwise.
++
+ FORMAL CONCLUSION
+ By D1 (SUFFICIENT): [yes/no — every Rn has a mapping AND an NTn]
+ By D2 (MINIMAL):    [yes/no — every CHANGE SURFACE row cites an Rn]
+@@ -151,6 +163,89 @@ Render via the `imagegen` skill (`cat /home/david/.claude/skills/imagegen/SKILL.
+ 
+ Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+ 
++## SELF-ARCHIVE (v2.3 — mandatory closing step)
++
++After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
++
++### Step 1 — Compute peepID
++
++```bash
++PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
++```
++
++`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
++
++### Step 2 — Bootstrap archive worktree (first use only)
++
++If `~/peep-archive` does not exist on this machine:
++
++```bash
++cd ~/david-harness
++git fetch origin peep:peep 2>/dev/null || (
++  # Orphan branch not yet on remote either — create it
++  tmpdir=$(mktemp -d)
++  git worktree add --detach "$tmpdir"
++  cd "$tmpdir"
++  git checkout --orphan peep
++  git rm -rf .
++  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
++  git add README.md
++  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
++  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
++)
++git worktree add ~/peep-archive peep
++```
++
++### Step 3 — Collision check, then write archive folder
++
++```bash
++ARCHIVE=~/peep-archive/$PEEPID
++if [ -f "$ARCHIVE/spec.txt" ]; then
++  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
++    echo "sha8 collision at $PEEPID — extending to sha12" >&2
++    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
++    ARCHIVE=~/peep-archive/$PEEPID
++  fi
++fi
++
++mkdir -p "$ARCHIVE"
++printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
++# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
++# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
++# Write mental-model.png (the rendered image)
++```
++
++### Step 4 — Commit + push
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/"
++git commit -m "$PEEPID: <one-line summary of the SPEC>"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 5 — Builder handoff (print to user)
++
++Print:
++
++```
++peep contract archived: <peepID>
++  archive: ~/peep-archive/<peepID>/
++  branch:  peep (in david-kijko/david-harness)
++  next:
++    1. Builder reads ~/peep-archive/<peepID>/contract.md
++    2. Builder modifies code in their project repo
++    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
++         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
++    4. Builder commits + pushes the manifest to orphan branch peep
++    5. Run /checkit <peepID> to verify
++```
++
++If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
++
+ ## Common slip: filling the survey table from memory
+ 
+ The Existing Pattern Survey only works if you actually grep. "Hypothesis: there's probably a retry helper" without searching counts as zero evidence. Use the loop in `references/exploration-loop.md` — every hypothesis must be CONFIRMED or REFUTED by file:line evidence, with a confidence update.
+diff --git a/claude/skills/peep/templates/greenfield-construction.md b/claude/skills/peep/templates/greenfield-construction.md
+index 5405441..c2aa0bc 100644
+--- a/claude/skills/peep/templates/greenfield-construction.md
++++ b/claude/skills/peep/templates/greenfield-construction.md
+@@ -173,6 +173,18 @@ ADVERSARIAL CHECK  (must answer all three honestly)
+ 3. Untestable boundary: can NT1 be run with NO network, NO real DB, NO LLM?
+    If not, what fixture seam will I add?
+ 
++UI_BEHAVIOR_AFFECTING: [yes | no]
++  Answer "yes" if any Rn changes the visible or interactive behavior of a
++  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
++  extension, etc.). Answer "no" for pure backend, CLI, library, or
++  build-tooling features.
++
++  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
++  describable as a proofshot scenario (start app -> navigate -> assert
++  visual state), AND the builder MUST include `app.launch_cmd` and
++  `app.url` in build-manifest.json before invoking checkit. checkit
++  rejects MANIFEST_INCOMPLETE otherwise.
++
+ FORMAL CONCLUSION
+ By D1 (SUFFICIENT):           [yes/no]
+ By D2 (MINIMAL):              [yes/no]
+@@ -205,6 +217,89 @@ Render via the `imagegen` skill (`cat /home/david/.claude/skills/imagegen/SKILL.
+ 
+ Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+ 
++## SELF-ARCHIVE (v2.3 — mandatory closing step)
++
++After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
++
++### Step 1 — Compute peepID
++
++```bash
++PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
++```
++
++`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
++
++### Step 2 — Bootstrap archive worktree (first use only)
++
++If `~/peep-archive` does not exist on this machine:
++
++```bash
++cd ~/david-harness
++git fetch origin peep:peep 2>/dev/null || (
++  # Orphan branch not yet on remote either — create it
++  tmpdir=$(mktemp -d)
++  git worktree add --detach "$tmpdir"
++  cd "$tmpdir"
++  git checkout --orphan peep
++  git rm -rf .
++  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
++  git add README.md
++  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
++  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
++)
++git worktree add ~/peep-archive peep
++```
++
++### Step 3 — Collision check, then write archive folder
++
++```bash
++ARCHIVE=~/peep-archive/$PEEPID
++if [ -f "$ARCHIVE/spec.txt" ]; then
++  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
++    echo "sha8 collision at $PEEPID — extending to sha12" >&2
++    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
++    ARCHIVE=~/peep-archive/$PEEPID
++  fi
++fi
++
++mkdir -p "$ARCHIVE"
++printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
++# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
++# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
++# Write mental-model.png (the rendered image)
++```
++
++### Step 4 — Commit + push
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/"
++git commit -m "$PEEPID: <one-line summary of the SPEC>"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 5 — Builder handoff (print to user)
++
++Print:
++
++```
++peep contract archived: <peepID>
++  archive: ~/peep-archive/<peepID>/
++  branch:  peep (in david-kijko/david-harness)
++  next:
++    1. Builder reads ~/peep-archive/<peepID>/contract.md
++    2. Builder modifies code in their project repo
++    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
++         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
++    4. Builder commits + pushes the manifest to orphan branch peep
++    5. Run /checkit <peepID> to verify
++```
++
++If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
++
+ ## Common slip: writing "no runnable command yet" in VERIFICATION SCAFFOLD
+ 
+ This is G3. The verification harness is part of the feature, not a follow-up. If `npm test` or `pytest` doesn't work in a fresh clone after your plan, you haven't built greenfield — you've built half a feature.
+diff --git a/codex/skills/checkit/SKILL.md b/codex/skills/checkit/SKILL.md
+new file mode 100644
+index 0000000..29bc8fc
+--- /dev/null
++++ b/codex/skills/checkit/SKILL.md
+@@ -0,0 +1,258 @@
++---
++name: checkit
++description: Use when verifying that a builder agent's actual code changes match a peep contract's specification. Audits a diff against the archived contract via adversarial gap analysis: identifies unsatisfied requirements, violated invariants, scope creep; runs proofshot mandatorily for UI-behavior-affecting features; emits a structured verdict (PASS, GAP, BEHAVIORAL_FAIL, MANIFEST_INCOMPLETE) and a corrective prompt for the next builder session. Triggers include "checkit", "verify the build", "audit the diff", "did the builder ship what was specified", "verify peep-XXXXXXXX", "/checkit peep-XXXXXXXX". Pairs with peep — peep specifies, checkit verifies. Reads from the orphan branch `peep` archive at ~/peep-archive/<peepID>/ and writes verification runs back to the same archive.
++---
++
++# checkit — Forensic Verifier for peep Contracts
++
++## Purpose
++
++`peep` produces a contract at *plan time*. The builder ships code at *build
++time*. **checkit closes the loop at audit time**: given a `peepID`, it audits
++the actual code diff against the archived contract and emits a structured
++verdict + corrective prompt. Every verification run is itself archived to the
++same orphan branch as the contract, so the GitHub history is a permanent,
++diffable trail joining every contract to every audit of it.
++
++**This is not blind verification.** Adversarial framing of one agent
++("find requirements that are NOT satisfied") is the bias mitigation, not a
++sealed sandbox. If you want true blind reconstruction, that's a future
++hardening — see "Honest limitations" below.
++
++## Invocation
++
++```
++/checkit <peepID>
++```
++
++The peepID is **mandatory**, format `peep-<8 hex chars>`. No mtime fallback,
++no auto-detect. The contract must already be archived at
++`~/peep-archive/<peepID>/`.
++
++## The four verdict tokens
++
++Strict precedence — earliest match wins:
++
++1. **`MANIFEST_INCOMPLETE`** — `build-manifest.json` missing required fields
++2. **`BEHAVIORAL_FAIL`** — `proofshot` caught a regression (only possible
++   when contract `UI_BEHAVIOR_AFFECTING=yes`)
++3. **`GAP`** — gap-report.md found any NOT SATISFIED requirement, VIOLATED
++   invariant, or scope creep
++4. **`PASS`** — everything above clean
++
++`corrective-prompt.md` is written for any non-PASS verdict.
++
++## Inputs
++
++Read from the archive:
++
++| File | Purpose | Required |
++|---|---|---|
++| `~/peep-archive/<peepID>/contract.md` | the spec to verify against | yes |
++| `~/peep-archive/<peepID>/build-manifest.json` | where the code change lives | yes |
++| `~/peep-archive/<peepID>/mental-model.brief.md` | architectural intent (for adversarial agent context) | optional |
++| `~/peep-archive/<peepID>/mental-model.png` | architectural intent (for adversarial agent context) | optional |
++
++`build-manifest.json` schema:
++
++```json
++{
++  "peepID": "peep-bbfa2319",
++  "repo": "/abs/path/to/project",
++  "base": "<git commit SHA before the change>",
++  "head": "<git commit SHA after the change, or 'HEAD'>",
++  "tests": ["pytest tests/test_foo.py::test_bar", ...],
++  "app": { "launch_cmd": "...", "url": "http://localhost:..." }
++}
++```
++
++`app.launch_cmd` and `app.url` are **required if and only if**
++`contract.UI_BEHAVIOR_AFFECTING == yes`. If the field is `yes` and
++`app.*` is absent → verdict = `MANIFEST_INCOMPLETE`.
++
++## Workflow
++
++### Step 1 — Validate inputs and create the run directory
++
++```bash
++PEEPID="$1"   # e.g. peep-bbfa2319
++ARCHIVE=~/peep-archive/$PEEPID
++
++# Validate
++[ -f "$ARCHIVE/contract.md" ]          || { echo "no contract for $PEEPID" >&2; exit 2; }
++[ -f "$ARCHIVE/build-manifest.json" ]  || { 
++  RUN=$ARCHIVE/checkit/run-$(date -u +%Y-%m-%dT%H%MZ)-$(uuidgen | cut -c1-6)
++  mkdir -p "$RUN"
++  echo "MANIFEST_INCOMPLETE" > "$RUN/verdict.md"
++  cat > "$RUN/corrective-prompt.md" <<EOF
++build-manifest.json is missing at $ARCHIVE/build-manifest.json. Builder must
++write {peepID, repo, base, head, tests, app(if UI)} and re-run /checkit $PEEPID.
++EOF
++  # commit + push (Step 6) then exit
++}
++
++RUN="$ARCHIVE/checkit/run-$(date -u +%Y-%m-%dT%H%MZ)-$(uuidgen | cut -c1-6)"
++mkdir -p "$RUN"
++```
++
++### Step 2 — Compute the diff
++
++```bash
++REPO=$(jq -r .repo "$ARCHIVE/build-manifest.json")
++BASE=$(jq -r .base "$ARCHIVE/build-manifest.json")
++HEAD=$(jq -r .head "$ARCHIVE/build-manifest.json")
++git -C "$REPO" diff "$BASE..$HEAD" > "$RUN/diff.txt"
++```
++
++If the diff is huge (>2 MB), truncate with a header noting the truncation.
++`git diff` already skips binaries (replaced with `Binary files differ`).
++
++### Step 3 — Adversarial gap analysis (mandatory)
++
++Dispatch one `hephaestus` call using `templates/adversarial-audit.md` as the
++brief. Substitute the placeholder paths with the actual `$ARCHIVE` and `$RUN`
++values. Hephaestus reads `contract.md` and `diff.txt` and produces
++`$RUN/gap-report.md`.
++
++```bash
++brief=$(mktemp)
++sed -e "s|{{ARCHIVE}}|$ARCHIVE|g" -e "s|{{RUN}}|$RUN|g" -e "s|{{PEEPID}}|$PEEPID|g" \
++  /home/david/.codex/skills/checkit/templates/adversarial-audit.md > "$brief"
++
++COMPLETION_GUARD_TASK_TYPE=gap_analysis \
++HEPHAESTUS_MODEL=gpt-5.5 HEPHAESTUS_REASONING_EFFORT=high \
++hephaestus --file "$brief" --dir "$RUN" --dangerous
++```
++
++Wait for `gap-report.md` to land. Read its closing line:
++- `GAP_FINDINGS_FOUND` → verdict candidate `GAP`
++- `GAP_FINDINGS_NONE` → verdict candidate `PASS`
++
++### Step 4 — Proofshot (mandatory if UI-affecting)
++
++```bash
++UI=$(grep -E "^UI_BEHAVIOR_AFFECTING:" "$ARCHIVE/contract.md" | awk '{print $2}')
++if [ "$UI" = "yes" ]; then
++  LAUNCH=$(jq -r '.app.launch_cmd // ""' "$ARCHIVE/build-manifest.json")
++  URL=$(jq -r '.app.url // ""' "$ARCHIVE/build-manifest.json")
++  if [ -z "$LAUNCH" ] || [ -z "$URL" ]; then
++    echo "MANIFEST_INCOMPLETE" > "$RUN/verdict.md"
++    cat > "$RUN/missing-proofshot-fields.md" <<EOF
++Contract declares UI_BEHAVIOR_AFFECTING=yes but build-manifest.json is missing
++app.launch_cmd or app.url. Builder must fill these and re-run /checkit $PEEPID.
++EOF
++    cat > "$RUN/corrective-prompt.md" <<EOF
++$(cat "$RUN/missing-proofshot-fields.md")
++EOF
++    # skip to commit + push
++  else
++    mkdir -p "$RUN/proofshot"
++    # invoke /proofshot with the contract's UI NEW_TEST_OBLIGATIONS as the
++    # test plan, $LAUNCH as the launch command, $URL as the target.
++    # Save artifacts to $RUN/proofshot/.
++    # If proofshot reports any failure, set verdict candidate = BEHAVIORAL_FAIL.
++  fi
++fi
++```
++
++When invoking `/proofshot`, pass:
++- `--launch`: the launch command from the manifest
++- `--url`: the URL from the manifest
++- `--scenarios`: file containing the contract's UI-related NEW TEST OBLIGATIONS (NTn rows where the test exercises a UI flow), one per line
++- `--out`: `$RUN/proofshot/`
++
++A proofshot failure (timeout, console error, visual regression, failed
++assertion) → `BEHAVIORAL_FAIL` candidate.
++
++### Step 5 — Apply verdict precedence
++
++```python
++if MANIFEST_INCOMPLETE_set:    verdict = "MANIFEST_INCOMPLETE"
++elif BEHAVIORAL_FAIL_set:      verdict = "BEHAVIORAL_FAIL"
++elif GAP_set:                  verdict = "GAP"
++else:                          verdict = "PASS"
++```
++
++Write verdict.md (single token on first line):
++```bash
++echo "$VERDICT" > "$RUN/verdict.md"
++```
++
++### Step 6 — Corrective prompt (any non-PASS)
++
++If verdict is not `PASS`, write `$RUN/corrective-prompt.md` containing:
++
++- The verdict token
++- Bulleted list of every NOT-SATISFIED Rn, VIOLATED INVm, scope-creep file,
++  proofshot failure, or missing manifest field
++- For each, what the builder should do next (file edits, missing tests,
++  missing manifest field, etc.)
++
++This file is the input to the next builder session.
++
++### Step 7 — Commit + push the orphan branch
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/checkit/$(basename "$RUN")"
++git commit -m "checkit $PEEPID verdict=$VERDICT"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 8 — Report to the user
++
++Print:
++```
++checkit complete: <peepID>
++  run:     <run path>
++  verdict: <verdict token>
++  pushed:  origin/peep
++  next:    <if non-PASS>: read $RUN/corrective-prompt.md, fix, re-run /checkit
++           <if PASS>:     ship it
++```
++
++## Run folder naming
++
++`<run> = ~/peep-archive/<peepID>/checkit/run-<UTC-iso>-<6char-uuid>/`
++
++Example: `~/peep-archive/peep-bbfa2319/checkit/run-2026-05-05T0142Z-3f9a2c/`
++
++No counter — race-free under concurrent checkit invocations.
++
++## Outputs in the run folder
++
++| File | When | Contents |
++|---|---|---|
++| `diff.txt` | always | the audited diff |
++| `gap-report.md` | always (unless MANIFEST_INCOMPLETE before Step 3) | adversarial review findings |
++| `verdict.md` | always | one token: PASS \| GAP \| BEHAVIORAL_FAIL \| MANIFEST_INCOMPLETE |
++| `corrective-prompt.md` | non-PASS | next-builder-session instructions |
++| `proofshot/` | UI-affecting + manifest complete | proofshot session artifacts |
++| `missing-proofshot-fields.md` | UI-affecting + manifest incomplete | what fields are missing |
++
++## Honest limitations
++
++- **Not blind.** The adversarial agent has the contract while reviewing the
++  diff. Adversarial framing ("find requirements that are NOT satisfied") is
++  the only bias mitigation. The previous design's "sealed temp dir" was
++  policy not enforcement on this machine because hephaestus runs codex with
++  `--dangerously-bypass-approvals-and-sandbox`. True blind reconstruction
++  is a v2 hardening (requires bwrap or container isolation around the
++  phase-1 dispatch); explicitly out of scope for v1.
++- **Manifest is documentation, not enforcement.** If the builder lies in
++  build-manifest.json (wrong base/head/repo), checkit audits the lie. Fix
++  is builder discipline + clear peep template guidance, not checkit
++  machinery.
++- **Diff filtering is naive.** Huge diffs are truncated; binaries skipped
++  by git itself; generated files are NOT auto-excluded — that's the
++  builder's responsibility via `.gitattributes`.
++
++## See also
++
++- `peep` — produces the contracts checkit verifies
++- `proofshot` — invoked by checkit for UI-affecting features
++- `hephaestus` — the deep worker checkit dispatches for adversarial review
++- Orphan branch `peep` of `david-kijko/david-harness` — the archive of all contracts and verifications
+diff --git a/codex/skills/checkit/templates/adversarial-audit.md b/codex/skills/checkit/templates/adversarial-audit.md
+new file mode 100644
+index 0000000..26ad4c3
+--- /dev/null
++++ b/codex/skills/checkit/templates/adversarial-audit.md
+@@ -0,0 +1,122 @@
++# Adversarial gap analysis brief (checkit phase)
++
++gap_analysis
++
++You are an ADVERSARIAL reviewer. The peep contract below specifies what
++WAS SUPPOSED to be built. The diff below is what WAS ACTUALLY shipped.
++Your job is to find what is **missing, wrong, or out of scope**. Do not be
++polite. Do not validate. Find the gaps.
++
++## Inputs (read all of these)
++
++1. **CONTRACT** — the spec, with R1..Rn requirements, INV1..INVm invariants,
++   CHANGE SURFACE files, NEW TEST OBLIGATIONS, anti-claims:
++   {{ARCHIVE}}/contract.md
++
++2. **DIFF** — the actual code change being audited:
++   {{RUN}}/diff.txt
++
++3. **BUILD MANIFEST** — repo, base, head, tests, app launch info:
++   {{ARCHIVE}}/build-manifest.json
++
++4. **MENTAL MODEL BRIEF (optional)** — author's architectural intent:
++   {{ARCHIVE}}/mental-model.brief.md (if present)
++
++## Required output
++
++Write `{{RUN}}/gap-report.md` with these sections, in this order:
++
++### 1. Requirement satisfaction
++
++For **every** Rn in the contract, output one row:
++
++```
++- [SATISFIED | NOT_SATISFIED | PARTIAL] Rn — <short description>
++  Evidence: <file:line in the diff that satisfies it, or note "no diff hunk">
++  If PARTIAL: <what's missing>
++```
++
++A requirement that is not addressed in the diff at all is `NOT_SATISFIED`,
++not "out of scope".
++
++### 2. Invariant preservation
++
++For **every** INVm in the contract, output one row:
++
++```
++- [PRESERVED | VIOLATED] INVm — <short description>
++  Evidence: <file:line + 1-sentence reasoning>
++```
++
++### 3. Scope creep
++
++For **every file changed in the diff** that is NOT listed in the contract's
++CHANGE SURFACE, output one row:
++
++```
++- <file path> (+<adds>, -<dels>) — <one-line description of what changed>
++  Note: not in CHANGE SURFACE; flag for human review.
++```
++
++If the diff respects the CHANGE SURFACE exactly, write: "No scope creep."
++
++### 4. Anti-claims
++
++For each anti-claim in the contract or mental-model brief (e.g. "no edits to
++legacy_retry.py", "no plugin system", any item under WHAT THE PICTURE MUST
++NOT IMPLY), check the diff. List violations:
++
++```
++- VIOLATED: <anti-claim verbatim> — Evidence: <file:line>
++```
++
++If no violations: "No anti-claim violations."
++
++### 5. Test obligations
++
++For **every** NTn in the contract, output:
++
++```
++- [PRESENT | MISSING] NTn — <short description>
++  If PRESENT: <test file:test name in the diff>; does it cover what NTn claims?
++```
++
++### 6. Summary
++
++A 3-5 sentence honest summary. What was shipped, what was skipped, what was
++out of scope, your overall confidence.
++
++## Required closing line
++
++The last line of the file MUST be exactly one of:
++
++```
++GAP_FINDINGS_FOUND
++GAP_FINDINGS_NONE
++```
++
++`GAP_FINDINGS_NONE` requires:
++- Every Rn is SATISFIED (no NOT_SATISFIED, no PARTIAL)
++- Every INVm is PRESERVED
++- No scope creep
++- No anti-claim violations
++- Every NTn is PRESENT and adequately covers its claim
++
++Anything else → `GAP_FINDINGS_FOUND`.
++
++## Discipline
++
++- Cite `file:line` from `{{RUN}}/diff.txt` line numbers, not from the
++  original repo.
++- Do not speculate about what's "probably correct" — if the diff doesn't
++  show it, it isn't shipped.
++- Do not give the benefit of the doubt — checkit is the bias-checker for the
++  builder, not their cheerleader.
++- Adversarial framing: phrase findings as gaps, not as praise. "Rn is
++  SATISFIED" is fine; "Rn is beautifully implemented" is not.
++
++## Required final output (printed to stdout, in addition to writing the file)
++
++- `output: {{RUN}}/gap-report.md`
++- `bytes: <N>` (size of the file)
++- `closing: GAP_FINDINGS_FOUND` or `closing: GAP_FINDINGS_NONE`
+diff --git a/codex/skills/firecrawl/scripts/firecrawl_cli.py b/codex/skills/firecrawl/scripts/firecrawl_cli.py
+index faace5a..5f2b092 100755
+--- a/codex/skills/firecrawl/scripts/firecrawl_cli.py
++++ b/codex/skills/firecrawl/scripts/firecrawl_cli.py
+@@ -19,18 +19,73 @@ import json
+ import os
+ import sys
+ import textwrap
++from pathlib import Path
+ from typing import Any
+ 
+ 
++def _env_file_candidates() -> list[Path]:
++    paths: list[Path] = []
++    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
++    if xdg:
++        paths.append(Path(xdg) / "firecrawl" / "env.sh")
++    paths.append(Path.home() / ".config" / "firecrawl" / "env.sh")
++    seen: set[Path] = set()
++    deduped: list[Path] = []
++    for p in paths:
++        if p not in seen:
++            seen.add(p)
++            deduped.append(p)
++    return deduped
++
++
++def _parse_env_file(path: Path) -> dict[str, str]:
++    """Parse a POSIX-style env file: `export KEY=VALUE` or `KEY=VALUE`.
++
++    Strips a single layer of matching surrounding quotes. Ignores comments and
++    blank lines. Malformed lines are skipped silently — this is a best-effort
++    fallback, not a shell.
++    """
++    out: dict[str, str] = {}
++    try:
++        text = path.read_text()
++    except OSError:
++        return out
++    for raw in text.splitlines():
++        line = raw.strip()
++        if not line or line.startswith("#"):
++            continue
++        if line.startswith("export "):
++            line = line[len("export "):].lstrip()
++        if "=" not in line:
++            continue
++        key, _, val = line.partition("=")
++        key = key.strip()
++        val = val.strip()
++        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
++            val = val[1:-1]
++        if key:
++            out[key] = val
++    return out
++
++
+ def load_api_key() -> str:
+     key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+-    if not key:
+-        print(
+-            "Missing FIRECRAWL_API_KEY. Source ~/.config/firecrawl/env.sh or export it manually.",
+-            file=sys.stderr,
+-        )
+-        raise SystemExit(2)
+-    return key
++    if key:
++        return key
++    # Subagent shells often skip ~/.bashrc and ~/.profile, so the env var
++    # isn't propagated even when the user has it set interactively. Fall back
++    # to reading the canonical env file directly.
++    for candidate in _env_file_candidates():
++        if candidate.is_file():
++            key = (_parse_env_file(candidate).get("FIRECRAWL_API_KEY") or "").strip()
++            if key:
++                return key
++    print(
++        "Missing FIRECRAWL_API_KEY. Set it in the environment or write "
++        "`export FIRECRAWL_API_KEY=...` to ~/.config/firecrawl/env.sh.",
++        file=sys.stderr,
++    )
++    raise SystemExit(2)
+ 
+ 
+ def make_client():
+diff --git a/codex/skills/peep/SKILL.md b/codex/skills/peep/SKILL.md
+index d6646ab..9038c46 100644
+--- a/codex/skills/peep/SKILL.md
++++ b/codex/skills/peep/SKILL.md
+@@ -61,6 +61,17 @@ Brownfield and greenfield templates each end with a mandatory `MENTAL MODEL DIAG
+ 
+ The brief — not the image — is the primary review artifact. Its purpose is to surface the architectural intuitions that prose leaves implicit (purity vs IO, owned vs external, in-scope vs explicitly-rejected, invariants the picture must encode, anti-claims the picture must NOT imply). An adversarial reviewer reads the brief AND looks at the image to spot business-logic errors and hidden assumptions the prose hid. Do not write the brief from a checklist; the agent producing the certificate writes it themselves.
+ 
++## Construction templates also SELF-ARCHIVE (v2.3)
++
++Brownfield and greenfield certificates end with a mandatory `SELF-ARCHIVE` step that:
++
++- computes `peepID = sha8(verbatim SPEC)` — content-addressed, deterministic
++- writes `~/peep-archive/<peepID>/{spec.txt, contract.md, mental-model.brief.md, mental-model.png}` to a worktree of the orphan branch `peep` in `david-kijko/david-harness`
++- commits and pushes the orphan branch immediately
++- declares `UI_BEHAVIOR_AFFECTING: yes|no` so the downstream `checkit` skill knows whether `proofshot` is mandatory for the verification
++
++The orphan branch IS the peep log: a permanent, diffable trail joining every contract to every verification of it (verifications produced by `/checkit <peepID>`).
++
+ ## Tone
+ 
+ Skip prose recap. Fill the certificate. The bracketed fields ARE the work product.
+diff --git a/codex/skills/peep/templates/brownfield-construction.md b/codex/skills/peep/templates/brownfield-construction.md
+index 53a5296..8029f16 100644
+--- a/codex/skills/peep/templates/brownfield-construction.md
++++ b/codex/skills/peep/templates/brownfield-construction.md
+@@ -119,6 +119,18 @@ R2 → [...]
+ (Coverage check: which input partitions does NT1...NTn together exercise?
+ Note any unexercised partition that Rn implicitly requires.)
+ 
++UI_BEHAVIOR_AFFECTING: [yes | no]
++  Answer "yes" if any Rn changes the visible or interactive behavior of a
++  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
++  extension, etc.). Answer "no" for pure backend, CLI, library, or
++  build-tooling features.
++
++  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
++  describable as a proofshot scenario (start app -> navigate -> assert
++  visual state), AND the builder MUST include `app.launch_cmd` and
++  `app.url` in build-manifest.json before invoking checkit. checkit
++  rejects MANIFEST_INCOMPLETE otherwise.
++
+ FORMAL CONCLUSION
+ By D1 (SUFFICIENT): [yes/no — every Rn has a mapping AND an NTn]
+ By D2 (MINIMAL):    [yes/no — every CHANGE SURFACE row cites an Rn]
+@@ -147,10 +159,93 @@ Save:
+ - Brief: `<output-dir>/mental-model.brief.md`
+ - Image: `<output-dir>/mental-model.png`
+ 
+-Render via the codex-native `$imagegen` tool.
++Render via Codex's built-in `$imagegen` skill (`cat /home/david/.codex/skills/imagegen/SKILL.md`).
+ 
+ Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+ 
++## SELF-ARCHIVE (v2.3 — mandatory closing step)
++
++After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
++
++### Step 1 — Compute peepID
++
++```bash
++PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
++```
++
++`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
++
++### Step 2 — Bootstrap archive worktree (first use only)
++
++If `~/peep-archive` does not exist on this machine:
++
++```bash
++cd ~/david-harness
++git fetch origin peep:peep 2>/dev/null || (
++  # Orphan branch not yet on remote either — create it
++  tmpdir=$(mktemp -d)
++  git worktree add --detach "$tmpdir"
++  cd "$tmpdir"
++  git checkout --orphan peep
++  git rm -rf .
++  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
++  git add README.md
++  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
++  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
++)
++git worktree add ~/peep-archive peep
++```
++
++### Step 3 — Collision check, then write archive folder
++
++```bash
++ARCHIVE=~/peep-archive/$PEEPID
++if [ -f "$ARCHIVE/spec.txt" ]; then
++  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
++    echo "sha8 collision at $PEEPID — extending to sha12" >&2
++    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
++    ARCHIVE=~/peep-archive/$PEEPID
++  fi
++fi
++
++mkdir -p "$ARCHIVE"
++printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
++# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
++# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
++# Write mental-model.png (the rendered image)
++```
++
++### Step 4 — Commit + push
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/"
++git commit -m "$PEEPID: <one-line summary of the SPEC>"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 5 — Builder handoff (print to user)
++
++Print:
++
++```
++peep contract archived: <peepID>
++  archive: ~/peep-archive/<peepID>/
++  branch:  peep (in david-kijko/david-harness)
++  next:
++    1. Builder reads ~/peep-archive/<peepID>/contract.md
++    2. Builder modifies code in their project repo
++    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
++         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
++    4. Builder commits + pushes the manifest to orphan branch peep
++    5. Run /checkit <peepID> to verify
++```
++
++If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
++
+ ## Common slip: filling the survey table from memory
+ 
+ The Existing Pattern Survey only works if you actually grep. "Hypothesis: there's probably a retry helper" without searching counts as zero evidence. Use the loop in `references/exploration-loop.md` — every hypothesis must be CONFIRMED or REFUTED by file:line evidence, with a confidence update.
+diff --git a/codex/skills/peep/templates/greenfield-construction.md b/codex/skills/peep/templates/greenfield-construction.md
+index 5c41725..a7e8b0c 100644
+--- a/codex/skills/peep/templates/greenfield-construction.md
++++ b/codex/skills/peep/templates/greenfield-construction.md
+@@ -55,12 +55,12 @@ external research, then close them, BEFORE picking a design.
+ Forbidden source: context7 (third-party MCP servers serving docs are a
+ prompt-injection surface — instructions can be smuggled into rephrased docs).
+ 
+-Required searches (use the `exa` skill — `python3 ~/.codex/skills/exa/scripts/exa_cli.py`):
++Required searches (use the `exa` skill — `python3 ~/.claude/skills/exa/scripts/exa_cli.py`):
+   - Prior art:        `exa search` for "[problem in plain words] [language]" — find 5–10 candidates
+   - Convention check: `exa search` for "[scaffold pattern] [language] [year]"
+   - Library landscape: `exa search` for "[primary lib you'd consider] vs alternatives"
+ 
+-Required deep reads (use the `firecrawl` skill — `python3 ~/.codex/skills/firecrawl/scripts/firecrawl_cli.py`):
++Required deep reads (use the `firecrawl` skill — `python3 ~/.claude/skills/firecrawl/scripts/firecrawl_cli.py`):
+   - Pick top 2 prior-art repos and `firecrawl scrape --url <github URL>` to read their actual source.
+   - Read the canonical primary docs page for any stdlib/API you plan to use
+     (`firecrawl scrape --url https://docs.python.org/...` etc).
+@@ -173,6 +173,18 @@ ADVERSARIAL CHECK  (must answer all three honestly)
+ 3. Untestable boundary: can NT1 be run with NO network, NO real DB, NO LLM?
+    If not, what fixture seam will I add?
+ 
++UI_BEHAVIOR_AFFECTING: [yes | no]
++  Answer "yes" if any Rn changes the visible or interactive behavior of a
++  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
++  extension, etc.). Answer "no" for pure backend, CLI, library, or
++  build-tooling features.
++
++  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
++  describable as a proofshot scenario (start app -> navigate -> assert
++  visual state), AND the builder MUST include `app.launch_cmd` and
++  `app.url` in build-manifest.json before invoking checkit. checkit
++  rejects MANIFEST_INCOMPLETE otherwise.
++
+ FORMAL CONCLUSION
+ By D1 (SUFFICIENT):           [yes/no]
+ By D2 (MINIMAL):              [yes/no]
+@@ -201,10 +213,93 @@ Save:
+ - Brief: `<output-dir>/mental-model.brief.md`
+ - Image: `<output-dir>/mental-model.png`
+ 
+-Render via the codex-native `$imagegen` tool.
++Render via Codex's built-in `$imagegen` skill (`cat /home/david/.codex/skills/imagegen/SKILL.md`).
+ 
+ Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+ 
++## SELF-ARCHIVE (v2.3 — mandatory closing step)
++
++After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
++
++### Step 1 — Compute peepID
++
++```bash
++PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
++```
++
++`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
++
++### Step 2 — Bootstrap archive worktree (first use only)
++
++If `~/peep-archive` does not exist on this machine:
++
++```bash
++cd ~/david-harness
++git fetch origin peep:peep 2>/dev/null || (
++  # Orphan branch not yet on remote either — create it
++  tmpdir=$(mktemp -d)
++  git worktree add --detach "$tmpdir"
++  cd "$tmpdir"
++  git checkout --orphan peep
++  git rm -rf .
++  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
++  git add README.md
++  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
++  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
++)
++git worktree add ~/peep-archive peep
++```
++
++### Step 3 — Collision check, then write archive folder
++
++```bash
++ARCHIVE=~/peep-archive/$PEEPID
++if [ -f "$ARCHIVE/spec.txt" ]; then
++  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
++    echo "sha8 collision at $PEEPID — extending to sha12" >&2
++    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
++    ARCHIVE=~/peep-archive/$PEEPID
++  fi
++fi
++
++mkdir -p "$ARCHIVE"
++printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
++# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
++# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
++# Write mental-model.png (the rendered image)
++```
++
++### Step 4 — Commit + push
++
++```bash
++cd ~/peep-archive
++git add "$PEEPID/"
++git commit -m "$PEEPID: <one-line summary of the SPEC>"
++for i in 1 2 3; do
++  git pull --rebase origin peep && git push origin peep && break
++  sleep 2
++done
++```
++
++### Step 5 — Builder handoff (print to user)
++
++Print:
++
++```
++peep contract archived: <peepID>
++  archive: ~/peep-archive/<peepID>/
++  branch:  peep (in david-kijko/david-harness)
++  next:
++    1. Builder reads ~/peep-archive/<peepID>/contract.md
++    2. Builder modifies code in their project repo
++    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
++         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
++    4. Builder commits + pushes the manifest to orphan branch peep
++    5. Run /checkit <peepID> to verify
++```
++
++If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
++
+ ## Common slip: writing "no runnable command yet" in VERIFICATION SCAFFOLD
+ 
+ This is G3. The verification harness is part of the feature, not a follow-up. If `npm test` or `pytest` doesn't work in a fresh clone after your plan, you haven't built greenfield — you've built half a feature.
