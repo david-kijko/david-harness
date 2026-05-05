@@ -119,6 +119,18 @@ R2 → [...]
 (Coverage check: which input partitions does NT1...NTn together exercise?
 Note any unexercised partition that Rn implicitly requires.)
 
+UI_BEHAVIOR_AFFECTING: [yes | no]
+  Answer "yes" if any Rn changes the visible or interactive behavior of a
+  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
+  extension, etc.). Answer "no" for pure backend, CLI, library, or
+  build-tooling features.
+
+  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
+  describable as a proofshot scenario (start app -> navigate -> assert
+  visual state), AND the builder MUST include `app.launch_cmd` and
+  `app.url` in build-manifest.json before invoking checkit. checkit
+  rejects MANIFEST_INCOMPLETE otherwise.
+
 FORMAL CONCLUSION
 By D1 (SUFFICIENT): [yes/no — every Rn has a mapping AND an NTn]
 By D2 (MINIMAL):    [yes/no — every CHANGE SURFACE row cites an Rn]
@@ -150,6 +162,89 @@ Save:
 Render via the `imagegen` skill (`cat /home/david/.claude/skills/imagegen/SKILL.md`).
 
 Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+
+## SELF-ARCHIVE (v2.3 — mandatory closing step)
+
+After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
+
+### Step 1 — Compute peepID
+
+```bash
+PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
+```
+
+`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
+
+### Step 2 — Bootstrap archive worktree (first use only)
+
+If `~/peep-archive` does not exist on this machine:
+
+```bash
+cd ~/david-harness
+git fetch origin peep:peep 2>/dev/null || (
+  # Orphan branch not yet on remote either — create it
+  tmpdir=$(mktemp -d)
+  git worktree add --detach "$tmpdir"
+  cd "$tmpdir"
+  git checkout --orphan peep
+  git rm -rf .
+  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
+  git add README.md
+  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
+  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
+)
+git worktree add ~/peep-archive peep
+```
+
+### Step 3 — Collision check, then write archive folder
+
+```bash
+ARCHIVE=~/peep-archive/$PEEPID
+if [ -f "$ARCHIVE/spec.txt" ]; then
+  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
+    echo "sha8 collision at $PEEPID — extending to sha12" >&2
+    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
+    ARCHIVE=~/peep-archive/$PEEPID
+  fi
+fi
+
+mkdir -p "$ARCHIVE"
+printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
+# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
+# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
+# Write mental-model.png (the rendered image)
+```
+
+### Step 4 — Commit + push
+
+```bash
+cd ~/peep-archive
+git add "$PEEPID/"
+git commit -m "$PEEPID: <one-line summary of the SPEC>"
+for i in 1 2 3; do
+  git pull --rebase origin peep && git push origin peep && break
+  sleep 2
+done
+```
+
+### Step 5 — Builder handoff (print to user)
+
+Print:
+
+```
+peep contract archived: <peepID>
+  archive: ~/peep-archive/<peepID>/
+  branch:  peep (in david-kijko/david-harness)
+  next:
+    1. Builder reads ~/peep-archive/<peepID>/contract.md
+    2. Builder modifies code in their project repo
+    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
+         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
+    4. Builder commits + pushes the manifest to orphan branch peep
+    5. Run /checkit <peepID> to verify
+```
+
+If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
 
 ## Common slip: filling the survey table from memory
 

@@ -61,6 +61,17 @@ Brownfield and greenfield templates each end with a mandatory `MENTAL MODEL DIAG
 
 The brief — not the image — is the primary review artifact. Its purpose is to surface the architectural intuitions that prose leaves implicit (purity vs IO, owned vs external, in-scope vs explicitly-rejected, invariants the picture must encode, anti-claims the picture must NOT imply). An adversarial reviewer reads the brief AND looks at the image to spot business-logic errors and hidden assumptions the prose hid. Do not write the brief from a checklist; the agent producing the certificate writes it themselves.
 
+## Construction templates also SELF-ARCHIVE (v2.3)
+
+Brownfield and greenfield certificates end with a mandatory `SELF-ARCHIVE` step that:
+
+- computes `peepID = sha8(verbatim SPEC)` — content-addressed, deterministic
+- writes `~/peep-archive/<peepID>/{spec.txt, contract.md, mental-model.brief.md, mental-model.png}` to a worktree of the orphan branch `peep` in `david-kijko/david-harness`
+- commits and pushes the orphan branch immediately
+- declares `UI_BEHAVIOR_AFFECTING: yes|no` so the downstream `checkit` skill knows whether `proofshot` is mandatory for the verification
+
+The orphan branch IS the peep log: a permanent, diffable trail joining every contract to every verification of it (verifications produced by `/checkit <peepID>`).
+
 ## Tone
 
 Skip prose recap. Fill the certificate. The bracketed fields ARE the work product.

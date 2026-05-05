@@ -55,12 +55,12 @@ external research, then close them, BEFORE picking a design.
 Forbidden source: context7 (third-party MCP servers serving docs are a
 prompt-injection surface — instructions can be smuggled into rephrased docs).
 
-Required searches (use the `exa` skill — `python3 ~/.codex/skills/exa/scripts/exa_cli.py`):
+Required searches (use the `exa` skill — `python3 ~/.claude/skills/exa/scripts/exa_cli.py`):
   - Prior art:        `exa search` for "[problem in plain words] [language]" — find 5–10 candidates
   - Convention check: `exa search` for "[scaffold pattern] [language] [year]"
   - Library landscape: `exa search` for "[primary lib you'd consider] vs alternatives"
 
-Required deep reads (use the `firecrawl` skill — `python3 ~/.codex/skills/firecrawl/scripts/firecrawl_cli.py`):
+Required deep reads (use the `firecrawl` skill — `python3 ~/.claude/skills/firecrawl/scripts/firecrawl_cli.py`):
   - Pick top 2 prior-art repos and `firecrawl scrape --url <github URL>` to read their actual source.
   - Read the canonical primary docs page for any stdlib/API you plan to use
     (`firecrawl scrape --url https://docs.python.org/...` etc).
@@ -173,6 +173,18 @@ ADVERSARIAL CHECK  (must answer all three honestly)
 3. Untestable boundary: can NT1 be run with NO network, NO real DB, NO LLM?
    If not, what fixture seam will I add?
 
+UI_BEHAVIOR_AFFECTING: [yes | no]
+  Answer "yes" if any Rn changes the visible or interactive behavior of a
+  GUI application (web page, desktop UI, mobile app, IDE plugin, browser
+  extension, etc.). Answer "no" for pure backend, CLI, library, or
+  build-tooling features.
+
+  If "yes", NEW TEST OBLIGATIONS MUST include at least one UI flow
+  describable as a proofshot scenario (start app -> navigate -> assert
+  visual state), AND the builder MUST include `app.launch_cmd` and
+  `app.url` in build-manifest.json before invoking checkit. checkit
+  rejects MANIFEST_INCOMPLETE otherwise.
+
 FORMAL CONCLUSION
 By D1 (SUFFICIENT):           [yes/no]
 By D2 (MINIMAL):              [yes/no]
@@ -201,9 +213,92 @@ Save:
 - Brief: `<output-dir>/mental-model.brief.md`
 - Image: `<output-dir>/mental-model.png`
 
-Render via the codex-native `$imagegen` tool.
+Render via Codex's built-in `$imagegen` skill (`cat /home/david/.codex/skills/imagegen/SKILL.md`).
 
 Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats the entire purpose of the diagram as a separate deliverable from the prose.
+
+## SELF-ARCHIVE (v2.3 — mandatory closing step)
+
+After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. This makes the contract verifiable by `checkit` and any future reviewer, and is the durable audit trail that joins every contract to every verification of it.
+
+### Step 1 — Compute peepID
+
+```bash
+PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-8)"
+```
+
+`$VERBATIM_SPEC` MUST be the byte-exact user request you pasted into the SPEC field above. Same SPEC -> same peepID -> same archive folder (idempotent re-run).
+
+### Step 2 — Bootstrap archive worktree (first use only)
+
+If `~/peep-archive` does not exist on this machine:
+
+```bash
+cd ~/david-harness
+git fetch origin peep:peep 2>/dev/null || (
+  # Orphan branch not yet on remote either — create it
+  tmpdir=$(mktemp -d)
+  git worktree add --detach "$tmpdir"
+  cd "$tmpdir"
+  git checkout --orphan peep
+  git rm -rf .
+  printf '# peep archive\n\nOrphan branch storing peep contracts and checkit verification runs.\n' > README.md
+  git add README.md
+  git -c user.email="$(git config user.email)" -c user.name="$(git config user.name)" commit -m "init orphan branch peep"
+  cd ~/david-harness && git worktree remove "$tmpdir" && git push -u origin peep
+)
+git worktree add ~/peep-archive peep
+```
+
+### Step 3 — Collision check, then write archive folder
+
+```bash
+ARCHIVE=~/peep-archive/$PEEPID
+if [ -f "$ARCHIVE/spec.txt" ]; then
+  if ! diff -q <(printf '%s' "$VERBATIM_SPEC") "$ARCHIVE/spec.txt" >/dev/null; then
+    echo "sha8 collision at $PEEPID — extending to sha12" >&2
+    PEEPID="peep-$(printf '%s' "$VERBATIM_SPEC" | sha256sum | cut -c1-12)"
+    ARCHIVE=~/peep-archive/$PEEPID
+  fi
+fi
+
+mkdir -p "$ARCHIVE"
+printf '%s' "$VERBATIM_SPEC" > "$ARCHIVE/spec.txt"
+# Write contract.md (the filled certificate above, less this SELF-ARCHIVE section)
+# Write mental-model.brief.md (the brief authored under MENTAL MODEL DIAGRAM)
+# Write mental-model.png (the rendered image)
+```
+
+### Step 4 — Commit + push
+
+```bash
+cd ~/peep-archive
+git add "$PEEPID/"
+git commit -m "$PEEPID: <one-line summary of the SPEC>"
+for i in 1 2 3; do
+  git pull --rebase origin peep && git push origin peep && break
+  sleep 2
+done
+```
+
+### Step 5 — Builder handoff (print to user)
+
+Print:
+
+```
+peep contract archived: <peepID>
+  archive: ~/peep-archive/<peepID>/
+  branch:  peep (in david-kijko/david-harness)
+  next:
+    1. Builder reads ~/peep-archive/<peepID>/contract.md
+    2. Builder modifies code in their project repo
+    3. Builder writes ~/peep-archive/<peepID>/build-manifest.json:
+         {peepID, repo, base, head, tests[], app:{launch_cmd,url} (if UI=yes)}
+    4. Builder commits + pushes the manifest to orphan branch peep
+    5. Run /checkit <peepID> to verify
+```
+
+If `UI_BEHAVIOR_AFFECTING=yes`, the builder MUST populate `app.launch_cmd` and `app.url` or checkit will return `MANIFEST_INCOMPLETE`.
 
 ## Common slip: writing "no runnable command yet" in VERIFICATION SCAFFOLD
 
