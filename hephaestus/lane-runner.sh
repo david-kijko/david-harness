@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="gpt-5.4"
-REASONING_EFFORT="xhigh"
+MODEL="gpt-5.5"
+REASONING_EFFORT="high"
 AGENTS_FILE="/home/david/.codex/AGENTS.md"
 HEPHAESTUS_HOME="${HOME}/.hephaestus"
 OUTPUT_DIR="${HEPHAESTUS_HOME}/outputs"
