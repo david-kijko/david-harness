@@ -1,0 +1,7 @@
+pardon me but we already have homer-mcp which works flawlessly why didn't you just make a working API end point fot that MCP and end this charade?
+
+make sure you fetch full anthropic compatible API spec and make sure this api conforms so when we give the key it will work like normal
+
+make sure you do not break the homer-mcp this should be it's own homer-API repo
+
+y
