@@ -1,0 +1,7 @@
+nah we need full control surface dude
+
+came as AuthWrapper allows
+
+pardon me but we already have homer-mcp which works flawlessly why didn't you just make a working API end point fot that MCP and end this charade?
+
+make sure you fetch full anthropic compatible API spec and make sure this api conforms so when we give the key it will work like normal
