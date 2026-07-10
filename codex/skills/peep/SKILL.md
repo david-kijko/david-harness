@@ -57,7 +57,7 @@ Templates point you to references when you need depth. Don't preload — open th
 
 ## Construction templates produce TWO deliverables
 
-Brownfield and greenfield templates each end with a mandatory `MENTAL MODEL DIAGRAM` step. After the prose certificate is filled, the agent must articulate the architecture **in their own words** as an `imagegen` brief and render it. Both files (`mental-model.brief.md` and `mental-model.png`) are saved alongside the prose plan.
+Brownfield and greenfield templates each end with a mandatory `MENTAL MODEL DIAGRAM` step. After the prose certificate is filled, the active Codex agent must articulate the architecture **in their own words** as an `imagegen` brief and render it directly with the built-in `/imagegen` capability (`image_gen` tool). Do not delegate rendering to another agent or call the deprecated `peep-render-brief.sh` compatibility wrapper. Both files (`mental-model.brief.md` and `mental-model.png`) are saved alongside the prose plan, then archived with `peep-archive.sh`.
 
 The brief — not the image — is the primary review artifact. Its purpose is to surface the architectural intuitions that prose leaves implicit (purity vs IO, owned vs external, in-scope vs explicitly-rejected, invariants the picture must encode, anti-claims the picture must NOT imply). An adversarial reviewer reads the brief AND looks at the image to spot business-logic errors and hidden assumptions the prose hid. Do not write the brief from a checklist; the agent producing the certificate writes it themselves.
 

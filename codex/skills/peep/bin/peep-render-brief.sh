@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Deprecated compatibility wrapper for legacy, non-interactive callers.
+# Active Codex agents render directly with the built-in /imagegen capability.
+
 fail() {
   printf 'peep-render-brief: FAIL: %s\n' "$*" >&2
   exit 1
@@ -9,6 +12,9 @@ fail() {
 usage() {
   cat >&2 <<'USAGE'
 Usage: peep-render-brief.sh --brief <path> --out <path>
+
+DEPRECATED: compatibility wrapper for legacy callers. Active Codex agents
+must invoke the built-in /imagegen capability directly instead.
 USAGE
   exit 1
 }
@@ -50,6 +56,10 @@ out_parent=$(dirname -- "$out")
 brief_abs=$(realpath -- "$brief")
 out_abs=$(realpath -m -- "$out")
 out_parent_abs=$(realpath -- "$out_parent")
+
+printf '%s\n' \
+  'peep-render-brief: DEPRECATED compatibility wrapper; active Codex agents must use /imagegen directly' \
+  >&2
 
 if [[ -e "$out_abs" && ! -f "$out_abs" ]]; then
   fail "out path exists but is not a regular file: $out_abs"

@@ -213,7 +213,7 @@ Save:
 - Brief: `<output-dir>/mental-model.brief.md`
 - Image: `<output-dir>/mental-model.png`
 
-Render via Codex's built-in `$imagegen` skill (`cat /home/david/.codex/skills/imagegen/SKILL.md`).
+Render it yourself in this active Codex session with `/imagegen` (the built-in `image_gen` tool exposed by the `imagegen` skill). Pass the brief's contents as the generation prompt. The built-in tool saves under `$CODEX_HOME/generated_images/`; copy the selected PNG to `<output-dir>/mental-model.png`. Do not delegate rendering to another agent or invoke `peep-render-brief.sh`.
 
 ### Anti-rationalization
 
@@ -232,17 +232,16 @@ Sections 4 and 5 above are the adversarial-review surface. Skipping them defeats
 
 After FORMAL CONCLUSION and MENTAL MODEL DIAGRAM are complete, archive the contract to the orphan branch `peep` of `david-kijko/david-harness`. The archive is the durable audit trail that lets `checkit` and future reviewers connect the exact SPEC, filled certificate, mental-model brief, and rendered diagram.
 
-Write the byte-exact user SPEC to `<spec.txt>`, write the filled certificate body to `<contract.md>`, and write the mental-model brief to `<mental-model.brief.md>`. Then run these TWO scripts in this exact order:
+Write the byte-exact user SPEC to `<spec.txt>`, write the filled certificate body to `<contract.md>`, and write the mental-model brief to `<mental-model.brief.md>`. After the active agent has rendered and copied `<mental-model.png>` with `/imagegen`, run this archive script:
 
 ```bash
-/home/david/.codex/skills/peep/bin/peep-render-brief.sh --brief <mental-model.brief.md> --out <mental-model.png>
 /home/david/.codex/skills/peep/bin/peep-archive.sh \
     --spec-file <spec.txt> --contract-file <contract.md> \
     --brief-file <mental-model.brief.md> --image-file <mental-model.png> \
     --summary "<one line>"
 ```
 
-These scripts are the ONLY legitimate way to produce the archive. Do not hand-write archive files. Do not skip the render. The Stop hook will block your completion claim if you fabricate the archive.
+`peep-archive.sh` is the ONLY legitimate way to produce the archive. Do not hand-write archive files. Do not skip the direct `/imagegen` render. `peep-render-brief.sh` remains only as a deprecated compatibility wrapper for legacy callers; active Codex agents MUST NOT use it. The Stop hook will block your completion claim if you fabricate the archive.
 ## Common slip: writing "no runnable command yet" in VERIFICATION SCAFFOLD
 
 This is G3. The verification harness is part of the feature, not a follow-up. If `npm test` or `pytest` doesn't work in a fresh clone after your plan, you haven't built greenfield — you've built half a feature.
