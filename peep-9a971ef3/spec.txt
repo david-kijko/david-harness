@@ -1,0 +1,1 @@
+I want to make some changes to hephaestus-mcp so that it has a permanent url and the model can be upgraded to gpt-5.6-sol (all effort levels) please update gdrive KEYMAKER.env when finished and provide the credentials for a MCP host to make a connection ensure it gives full access to the the hands on this server
