@@ -1,0 +1,59 @@
+ticket=KIJ-769 parent=27481ae4-cli-epic
+
+# Implement slice BE-08 in worktree /home/david/Projects/aiverkeer-cli-impl-backend (branch stream-backend)
+
+Your branch already contains all merged dependency slices — build on what is there; do not re-implement completed dependencies.
+
+# BE-08 — Admin role + append-only audit log  (ticket: KIJ-769)
+
+## Objective
+An explicit admin principal: `User.is_admin` provisioned through an audited process,
+admin:read/admin:write scopes issuable only to admins, and an append-only audit table
+recording every admin API call. Gate for BE-09 and CLI-10.
+
+## Salvage source
+`upstream/models.py@ba1c03c` (User — no role today).
+
+## Research grounding
+- Spec §12.4 + §17: no host/email inference; role + scope BOTH required.
+
+## Scope (keep–strip–build)
+- **Keep**: everything customer-facing untouched.
+- **Strip**: any email-pattern admin shortcuts (never existed; do not add).
+- **Build**: is_admin column (Alembic on BE-01); BE-03 issuance check (403
+  admin_scope_forbidden for non-admins); `admin_audit_log` table (principal, action,
+  target, result, at); dependency `require_admin(scope)`.
+
+## Deterministic rules
+- Audit rows are INSERT-only (no update/delete path in code).
+- A non-admin with a stolen admin-scoped token string still fails (scope issuance
+  impossible + role recheck at request time).
+
+## Tests
+QA-01: non-admin token issuance 403; admin call writes exactly one audit row; audit has
+no UPDATE path (grep-level assertion + DB grant if feasible).
+
+## Done-when
+BE-09 endpoints can decorate with require_admin; provisioning runbook documented.
+
+## Landing
+Branch `david/kij-769-…` off `dev`; PR into `dev`. Depends: BE-01, BE-02.
+
+## Handoff evidence required
+403 transcript for non-admin scope request + audit-log SELECT after an admin call.
+
+## House rules (every lane)
+- Do the work yourself. Do NOT spawn sub-agents. Do NOT end your turn while any step is outstanding.
+- Work ONLY in the worktree directory given below. Commit your work on the CURRENT branch with message "<KEY>: <summary>". Do NOT push. Do NOT switch branches.
+- Reference material (read, never modify): /home/david/Projects/aiverkeer-cli-shared/
+  - SPEC.md — the full aiverkeer CLI specification (section numbers cited in your contract)
+  - slices/ — all slice contracts; upstream/ — source snapshots @ ba1c03c
+- Environment constraints: Docker is NOT available. Backend tests: pytest + FastAPI TestClient + SQLite (in-memory or file) — add a test fixture that creates the schema; do not require Postgres. Network IS available (pip/npm installs OK).
+- Scope discipline: implement YOUR slice only. If your contract references in-flight Linear work (KIJ-743..757) that is absent from this branch, IMPLEMENT the needed subset yourself per the repo plan `Plans/scheduled/crawler-detection-edge-implementation.md` and note it in the commit body.
+- Where a done-when requires external infrastructure you cannot reach (Netlify deploys, GitHub secrets, npm publish, Stripe live), implement everything local-executable (files, workflows, dry-runs, tests) and write the gap explicitly into FINALIZE — do not fake it.
+
+## FINALIZE (mandatory, literal — prose claims don't count)
+Print at the end:
+1. `git log --oneline -3` and `git show --stat HEAD | head -40`
+2. Full test-runner output for the tests your contract lists (or the documented gap)
+3. A line `LANE-RESULT: <KEY> DONE` or `LANE-RESULT: <KEY> PARTIAL — <one-line reason>`
