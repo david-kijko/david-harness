@@ -1,0 +1,61 @@
+ticket=KIJ-775 parent=27481ae4-cli-epic
+
+# Implement slice CLI-03 in worktree /home/david/Projects/aiverkeer-cli-impl-cli (branch stream-cli)
+
+Your branch already contains all merged dependency slices — build on what is there; do not re-implement completed dependencies.
+
+# CLI-03 — auth register|login|logout|status  (ticket: KIJ-775)
+
+## Objective
+The credential lifecycle in the terminal: register/login exchange the short-lived
+session cookie for a PAT (cookie in memory only, discarded after issuance), logout
+deletes locally and optionally self-revokes, status renders identity + capabilities.
+
+## Salvage source
+`upstream/auth.py@ba1c03c` (register/login semantics, Terms enforcement).
+
+## Research grounding
+- Spec §8.6 flows; §11.1 full command contracts (flags, examples, exit codes);
+  Terms/Privacy URLs from the consent component.
+
+## Scope (keep–strip–build)
+- **Keep**: product's password identity (no invented device flow in v1).
+- **Strip**: password via argv/env (never); browser /api/auth/logout call (cookie never
+  persisted, nothing to log out).
+- **Build**: register (prompt ×2, --accept-terms explicit), login (--token-stdin import
+  mode + password mode), logout (--revoke → DELETE /api/tokens/current; partial = exit
+  9), status (me + capabilities render).
+
+## Deterministic rules
+- Cookie lives only in process memory during exchange; PAT printed never by default.
+- --password-stdin warns; CI should use AIVERKEER_API_KEY.
+- 409 email-in-use maps to exit 6.
+
+## Tests
+QA-02 golden: full lifecycle vs dev; token import of bad/expired/revoked tokens →
+exit 3 with the right code; terms not accepted → 400/exit 2.
+
+## Done-when
+A fresh machine can register → status → logout --revoke with only the CLI.
+
+## Landing
+Branch `david/kij-775-…` off `dev`; PR into `dev`. Depends: CLI-02, BE-03, BE-04.
+
+## Handoff evidence required
+Literal terminal transcript of register→status→logout --revoke against dev.
+
+## House rules (every lane)
+- Do the work yourself. Do NOT spawn sub-agents. Do NOT end your turn while any step is outstanding.
+- Work ONLY in the worktree directory given below. Commit your work on the CURRENT branch with message "<KEY>: <summary>". Do NOT push. Do NOT switch branches.
+- Reference material (read, never modify): /home/david/Projects/aiverkeer-cli-shared/
+  - SPEC.md — the full aiverkeer CLI specification (section numbers cited in your contract)
+  - slices/ — all slice contracts; upstream/ — source snapshots @ ba1c03c
+- Environment constraints: Docker is NOT available. Backend tests: pytest + FastAPI TestClient + SQLite (in-memory or file) — add a test fixture that creates the schema; do not require Postgres. Network IS available (pip/npm installs OK).
+- Scope discipline: implement YOUR slice only. If your contract references in-flight Linear work (KIJ-743..757) that is absent from this branch, IMPLEMENT the needed subset yourself per the repo plan `Plans/scheduled/crawler-detection-edge-implementation.md` and note it in the commit body.
+- Where a done-when requires external infrastructure you cannot reach (Netlify deploys, GitHub secrets, npm publish, Stripe live), implement everything local-executable (files, workflows, dry-runs, tests) and write the gap explicitly into FINALIZE — do not fake it.
+
+## FINALIZE (mandatory, literal — prose claims don't count)
+Print at the end:
+1. `git log --oneline -3` and `git show --stat HEAD | head -40`
+2. Full test-runner output for the tests your contract lists (or the documented gap)
+3. A line `LANE-RESULT: <KEY> DONE` or `LANE-RESULT: <KEY> PARTIAL — <one-line reason>`
